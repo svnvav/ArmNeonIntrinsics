@@ -8,20 +8,25 @@ namespace DefaultNamespace
 {
     public class CharacterMove : MonoBehaviour
     {
-        [SerializeField] private float _moveSpeed = 1f;
+        [SerializeField] private float _startMoveSpeed = 1f;
         [SerializeField] private float _changeDirectionTime = 5f;
         
-        private Vector3 _moveDirection;
+        private Vector3 _velocity;
 
         private float _timerToChangeDirection;
 
-        public float2 MoveDirection => new float2(_moveDirection.x, _moveDirection.z);
+        public float2 Velocity2D => new float2(_velocity.x, _velocity.z);
 
+        public Vector3 Velocity => _velocity;
+
+        public Vector2 Position2D => new Vector2(transform.position.x, transform.position.z);
+        
+            
         private void Start()
         {
             _timerToChangeDirection = _changeDirectionTime;
             var moveDirection2D = Random.insideUnitCircle.normalized;
-            SetMoveDirection(moveDirection2D);
+            SetVelocity2D(_startMoveSpeed * moveDirection2D);
         }
 
         private void Update()
@@ -36,14 +41,25 @@ namespace DefaultNamespace
             Move();
         }
 
-        public void SetMoveDirection(Vector2 moveDirection2D)
+        public void SetVelocity2D(Vector2 velocity)
         {
-            _moveDirection = new Vector3(moveDirection2D.x, 0f, moveDirection2D.y);
+            _velocity = new Vector3(velocity.x, 0f, velocity.y);
+        }
+
+        public void SetVelocity(Vector3 velocity)
+        {
+            _velocity = velocity;
+        }
+        
+        public void AddVelocity(Vector3 velocity)
+        {
+            //velocity.y = 0f;
+            _velocity += velocity;
         }
 
         private void Move()
         {
-            transform.Translate(Time.deltaTime * _moveSpeed * _moveDirection);
+            transform.Translate(Time.deltaTime * _velocity);
         }
     }
 }
