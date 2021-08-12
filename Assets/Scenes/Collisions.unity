@@ -28750,6 +28750,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 46e3299770224ae6a947a8d2aae29d82, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _isNeonSupportedValue: {fileID: 1830271797}
   _info: {fileID: 1879006396}
 --- !u!4 &1440442315
 Transform:

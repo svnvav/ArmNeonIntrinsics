@@ -15,13 +15,9 @@ namespace DefaultNamespace
 
         private float _timerToChangeDirection;
 
-        public float2 Velocity2D => new float2(_velocity.x, _velocity.z);
-
         public Vector3 Velocity => _velocity;
 
-        public Vector2 Position2D => new Vector2(transform.position.x, transform.position.z);
-        
-            
+
         private void Start()
         {
             _timerToChangeDirection = _changeDirectionTime;
