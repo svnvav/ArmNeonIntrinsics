@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using TMPro;
 using Unity.Burst;
+using Unity.Burst.Intrinsics;
 using Unity.Mathematics;
 using UnityEngine;
 using static Unity.Burst.Intrinsics.Arm.Neon;
@@ -17,16 +18,18 @@ namespace DefaultNamespace
         [SerializeField] private TMP_Text _info;
 
 
-        private int _wallsCount;
+        private int _wallCount;
 
         private CharacterMove[] _characters;
         private Renderer[] _charRenderers;
         private int _charCount;
 
         private float4[] _wallBounds; //x = minX, y = minY, z = -maxX, w = -maxY
-        private float[] _wallBounds_f;
+        private float[] _wallBounds_floats;
+        private float[] _wallBounds_unrolled;
         private float4[] _charBounds; //x = maxX , y = maxY, z = -minX, w = -minY
-        private float[] _charBounds_f;
+        private float[] _charBounds_floats;
+        private float[] _charBounds_unrolled;
         private float[] _charPositionsX, _charPositionsY;
         private float[] _charRadii; //Да, во множественном числе слово "радиусы" переводится как radii
 
@@ -43,27 +46,37 @@ namespace DefaultNamespace
             _stopwatch = new Stopwatch();
 
             var walls = GameObject.FindGameObjectsWithTag("Wall");
-            _wallsCount = walls.Length;
+            _wallCount = walls.Length;
 
             _wallBounds = walls
                 .Select(wall => wall.GetComponentInChildren<Renderer>().bounds)
                 .Select(bounds => new float4(bounds.min.x, bounds.min.z, -bounds.max.x, -bounds.max.z))
                 .ToArray();
-            _wallBounds_f = new float[_wallsCount * 4];
-            for (int i = 0; i < _wallsCount; ++i)
+
+            _wallBounds_floats = new float[_wallCount * 4];
+            _wallBounds_unrolled = new float[_wallCount * 4];
+            for (int i = 0; i < _wallCount; ++i)
             {
-                _wallBounds_f[i * 4] = _wallBounds[i].x;
-                _wallBounds_f[i * 4 + 1] = _wallBounds[i].y;
-                _wallBounds_f[i * 4 + 2] = _wallBounds[i].z;
-                _wallBounds_f[i * 4 + 3] = _wallBounds[i].w;
+                _wallBounds_floats[i * 4 + 0] = _wallBounds[i].x;
+                _wallBounds_floats[i * 4 + 1] = _wallBounds[i].y;
+                _wallBounds_floats[i * 4 + 2] = _wallBounds[i].z;
+                _wallBounds_floats[i * 4 + 3] = _wallBounds[i].w;
+
+                _wallBounds_unrolled[0 * _wallCount + i] = _wallBounds[i].x;
+                _wallBounds_unrolled[1 * _wallCount + i] = _wallBounds[i].y;
+                _wallBounds_unrolled[2 * _wallCount + i] = _wallBounds[i].z;
+                _wallBounds_unrolled[3 * _wallCount + i] = _wallBounds[i].w;
             }
 
             var charactersGo = GameObject.FindGameObjectsWithTag("Character");
             _characters = charactersGo.Select(go => go.GetComponent<CharacterMove>()).ToArray();
             _charCount = _characters.Length;
+
             _charRenderers = charactersGo.Select(character => character.GetComponentInChildren<Renderer>()).ToArray();
             _charBounds = new float4[_charCount];
-            _charBounds_f = new float[_charCount * 4];
+            _charBounds_floats = new float[_charCount * 4];
+            _charBounds_unrolled = new float[_charCount * 4];
+
             _charPositionsX = new float[_charCount];
             _charPositionsY = new float[_charCount];
             _charRadii = new float[_charCount];
@@ -72,7 +85,7 @@ namespace DefaultNamespace
                 _charRadii[i] = 0.5f;
             }
 
-            _wallCharCollisions = new bool[_charCount * _wallsCount];
+            _wallCharCollisions = new bool[_charCount * _wallCount];
             _charCharCollisions = new bool[_charCount * _charCount];
         }
 
@@ -85,27 +98,37 @@ namespace DefaultNamespace
                 _charPositionsX[i] = _characters[i].transform.position.x;
                 _charPositionsY[i] = _characters[i].transform.position.z;
 
-                _charBounds_f[i * 4] = _charBounds[i].x;
-                _charBounds_f[i * 4 + 1] = _charBounds[i].y;
-                _charBounds_f[i * 4 + 2] = _charBounds[i].z;
-                _charBounds_f[i * 4 + 3] = _charBounds[i].w;
+                _charBounds_floats[i * 4 + 0] = _charBounds[i].x;
+                _charBounds_floats[i * 4 + 1] = _charBounds[i].y;
+                _charBounds_floats[i * 4 + 2] = _charBounds[i].z;
+                _charBounds_floats[i * 4 + 3] = _charBounds[i].w;
+
+                _charBounds_unrolled[0 * _charCount + i] = _charBounds[i].x;
+                _charBounds_unrolled[1 * _charCount + i] = _charBounds[i].y;
+                _charBounds_unrolled[2 * _charCount + i] = _charBounds[i].z;
+                _charBounds_unrolled[3 * _charCount + i] = _charBounds[i].w;
             }
 
             _stopwatch.Restart();
-            CheckWallChar_Plain();
+            //CheckWallChar_Plain();
             _stopwatch.Stop();
             var checkWallCharTime_Plain = _stopwatch.Elapsed;
 
             _stopwatch.Restart();
-            CheckWallChar_Neon();
+            //CheckWallChar_Neon();
             _stopwatch.Stop();
             var checkWallCharTime_Neon = _stopwatch.Elapsed;
 
             _stopwatch.Restart();
-            CheckCharChar_Plain();
+            CheckWallChar_NeonUnrolled();
+            _stopwatch.Stop();
+            var checkWallCharTime_NeonUnrolled = _stopwatch.Elapsed;
+
+            _stopwatch.Restart();
+            //CheckCharChar_Plain();
             _stopwatch.Stop();
             var checkCharCharTime_Plain = _stopwatch.Elapsed;
-            
+
             _stopwatch.Restart();
             CheckCharChar_Neon();
             _stopwatch.Stop();
@@ -121,12 +144,13 @@ namespace DefaultNamespace
             _stopwatch.Stop();
             var resolveCharCharTime = _stopwatch.Elapsed;
 
-            _info.text = $"checkWallCharTime_Plain: {checkWallCharTime_Plain}\n" +
-                         $"checkWallCharTime_Neon: {checkWallCharTime_Neon}\n" +
-                         $"checkCharCharTime_Plain: {checkCharCharTime_Plain}\n" +
-                         $"checkCharCharTime_Neon: {checkCharCharTime_Neon}\n" +
-                         $"resolveWallCharTime: {resolveWallCharTime}\n" +
-                         $"resolveCharCharTime: {resolveCharCharTime}\n";
+            _info.text = $"checkWallChar_Plain: {checkWallCharTime_Plain}\n" +
+                         $"checkWallChar_Neon: {checkWallCharTime_Neon}\n" +
+                         $"checkWallChar_NeonUnrolled: {checkWallCharTime_NeonUnrolled}\n" +
+                         $"checkCharChar_Plain: {checkCharCharTime_Plain}\n" +
+                         $"checkCharChar_Neon: {checkCharCharTime_Neon}\n" +
+                         $"resolveWallChar: {resolveWallCharTime}\n" +
+                         $"resolveCharChar: {resolveCharCharTime}\n";
         }
 
         private void ResolveWallChar()
@@ -134,9 +158,9 @@ namespace DefaultNamespace
             for (var c = 0; c < _charCount; ++c)
             {
                 var processed = 0;
-                for (var w = 0; w < _wallsCount; ++w)
+                for (var w = 0; w < _wallCount; ++w)
                 {
-                    if (_wallCharCollisions[c * _wallsCount + w])
+                    if (_wallCharCollisions[c * _wallCount + w])
                     {
                         var character = _characters[c];
                         var charBounds = _charBounds[c];
@@ -231,19 +255,28 @@ namespace DefaultNamespace
         {
             for (var c = 0; c < _charCount; ++c)
             {
-                for (var w = 0; w < _wallsCount; ++w)
+                for (var w = 0; w < _wallCount; ++w)
                 {
-                    _wallCharCollisions[c * _wallsCount + w] = CheckAabbIntersect(_charBounds[c], _wallBounds[w]);
+                    _wallCharCollisions[c * _wallCount + w] = CheckAabbIntersect(_charBounds[c], _wallBounds[w]);
                 }
             }
         }
 
         private unsafe void CheckWallChar_Neon()
         {
-            fixed (float* charBounds = _charBounds_f, wallBounds = _wallBounds_f)
+            fixed (float* charBounds = _charBounds_floats, wallBounds = _wallBounds_floats)
             fixed (bool* collisions = _wallCharCollisions)
             {
-                ProcessCheckWallChar_Neon(charBounds, _charCount, wallBounds, _wallsCount, collisions);
+                ProcessCheckWallChar_Neon(charBounds, _charCount, wallBounds, _wallCount, collisions);
+            }
+        }
+
+        private unsafe void CheckWallChar_NeonUnrolled()
+        {
+            fixed (float* charBounds = _charBounds_unrolled, wallBounds = _wallBounds_unrolled)
+            fixed (bool* collisions = _wallCharCollisions)
+            {
+                ProcessCheckWallChar_NeonUnrolled(charBounds, _charCount, wallBounds, _wallCount, collisions);
             }
         }
 
@@ -287,16 +320,72 @@ namespace DefaultNamespace
             [NoAlias] bool* collisions
         )
         {
-            if (IsNeonSupported)
+            if (!IsNeonSupported) return;
+
+            for (var c = 0; c < charCount; ++c)
             {
-                for (var c = 0; c < charCount; ++c)
+                var charBoundsVector = vld1q_f32(charBounds + 4 * c);
+                for (int w = 0; w < wallCount; w++)
                 {
-                    var charBoundsVector = vld1q_f32(charBounds + 4 * c);
-                    for (int w = 0; w < wallCount; w++)
-                    {
-                        var wallBoundsVector = vld1q_f32(wallBounds + 4 * w);
-                        collisions[c * wallCount + w] = vmaxvq_u32(vcgeq_f32(wallBoundsVector, charBoundsVector)) == 0;
-                    }
+                    var wallBoundsVector = vld1q_f32(wallBounds + 4 * w);
+                    collisions[c * wallCount + w] = vmaxvq_u32(vcgeq_f32(wallBoundsVector, charBoundsVector)) == 0;
+                }
+            }
+        }
+
+        [BurstCompile]
+        private static unsafe void ProcessCheckWallChar_NeonUnrolled(
+            [NoAlias] in float* charBounds, int charCount,
+            [NoAlias] in float* wallBounds, int wallCount,
+            [NoAlias] bool* collisions
+        )
+        {
+            if (!IsNeonSupported) return;
+
+            var lookup1 = new v64(0, 4, 8, 12, 255, 255, 255, 255);
+            var lookup2 = new v64(255, 255, 255, 255, 0, 4, 8, 12);
+
+            for (var c = 0; c < charCount; ++c)
+            {
+                var charMaxX = vdupq_n_f32(*(charBounds + 0 * charCount + c));
+                var charMaxY = vdupq_n_f32(*(charBounds + 1 * charCount + c));
+                var charMinX = vdupq_n_f32(*(charBounds + 2 * charCount + c));
+                var charMinY = vdupq_n_f32(*(charBounds + 3 * charCount + c));
+                var w = 0;
+                for (; w < (wallCount & ~7);)
+                {
+                    var wallsMinX = vld1q_f32(wallBounds + 0 * wallCount + w);
+                    var wallsMinY = vld1q_f32(wallBounds + 1 * wallCount + w);
+                    var wallsMaxX = vld1q_f32(wallBounds + 2 * wallCount + w);
+                    var wallsMaxY = vld1q_f32(wallBounds + 3 * wallCount + w);
+
+                    var result = vqtbl1_u8(
+                        vorrq_u32(
+                            vorrq_u32(vcgeq_f32(wallsMinX, charMaxX), vcgeq_f32(wallsMaxX, charMinX)),
+                            vorrq_u32(vcgeq_f32(wallsMinY, charMaxY), vcgeq_f32(wallsMaxY, charMinY))
+                        ),
+                        lookup1
+                    );
+
+                    w += 4;
+                    
+                    wallsMinX = vld1q_f32(wallBounds + 0 * wallCount + w);
+                    wallsMinY = vld1q_f32(wallBounds + 1 * wallCount + w);
+                    wallsMaxX = vld1q_f32(wallBounds + 2 * wallCount + w);
+                    wallsMaxY = vld1q_f32(wallBounds + 3 * wallCount + w);
+                    
+                    result = vqtbx1_u8(
+                        result,
+                        vorrq_u32(
+                            vorrq_u32(vcgeq_f32(wallsMinX, charMaxX), vcgeq_f32(wallsMaxX, charMinX)),
+                            vorrq_u32(vcgeq_f32(wallsMinY, charMaxY), vcgeq_f32(wallsMaxY, charMinY))
+                        ),
+                        lookup2
+                    );
+
+                    *(v64*) (collisions + c * wallCount + w - 4) = vmvn_u8(result);
+                    
+                    w += 4;
                 }
             }
         }
@@ -310,52 +399,51 @@ namespace DefaultNamespace
             [NoAlias] bool* collisions
         )
         {
-            if (IsNeonSupported)
+            if (!IsNeonSupported) return;
+
+            for (var c = 0; c < charCount; ++c)
             {
-                for (var c = 0; c < charCount; ++c)
+                var charPosX = vdupq_n_f32(positionsX[c]);
+                var charPosY = vdupq_n_f32(positionsY[c]);
+                var charRadius = vdupq_n_f32(radii[c]);
+                int t = c + 1;
+                for (; t < charCount - c % 4; t += 4)
                 {
-                    var charPosX = vdupq_n_f32(positionsX[c]);
-                    var charPosY = vdupq_n_f32(positionsY[c]);
-                    var charRadius = vdupq_n_f32(radii[c]);
-                    int t = c + 1;
-                    for (; t < charCount - c % 4; t += 4)
-                    {
-                        var targetPosXVector = vld1q_f32(positionsX + t);
-                        var targetPosYVector = vld1q_f32(positionsY + t);
-                        var targetRadiusVector = vld1q_f32(radii + t);
+                    var targetPosXVector = vld1q_f32(positionsX + t);
+                    var targetPosYVector = vld1q_f32(positionsY + t);
+                    var targetRadiusVector = vld1q_f32(radii + t);
 
-                        var squareDistance = vaddq_f32(
-                            vmulq_f32(vsubq_f32(charPosX, targetPosXVector), vsubq_f32(charPosX, targetPosXVector)),
-                            vmulq_f32(vsubq_f32(charPosY, targetPosYVector), vsubq_f32(charPosY, targetPosYVector))
-                        );
-                        
-                        //(charRadius + targetRadius)^2
-                        var radSumSqr = vmulq_f32(vaddq_f32(charRadius, targetRadiusVector), vaddq_f32(charRadius, targetRadiusVector));
+                    var squareDistance = vaddq_f32(
+                        vmulq_f32(vsubq_f32(charPosX, targetPosXVector), vsubq_f32(charPosX, targetPosXVector)),
+                        vmulq_f32(vsubq_f32(charPosY, targetPosYVector), vsubq_f32(charPosY, targetPosYVector))
+                    );
 
-                        var comparison = vcltq_f32(squareDistance, radSumSqr);
+                    //(charRadius + targetRadius)^2
+                    var radSumSqr = vmulq_f32(vaddq_f32(charRadius, targetRadiusVector), vaddq_f32(charRadius, targetRadiusVector));
 
-                        collisions[c * charCount + t] = vgetq_lane_u32(comparison, 0) > 0;
-                        collisions[c * charCount + t + 1] = vgetq_lane_u32(comparison, 1) > 0;
-                        collisions[c * charCount + t + 2] = vgetq_lane_u32(comparison, 2) > 0;
-                        collisions[c * charCount + t + 3] = vgetq_lane_u32(comparison, 3) > 0;
-                    }
+                    var comparison = vcltq_f32(squareDistance, radSumSqr);
 
-                    while (t < charCount)
-                    {
-                        /*var squareDistance =
-                            (positionsX[c] - positionsX[t]) * (positionsX[c] - positionsX[t]) +
-                            (positionsY[c] - positionsY[t]) * (positionsY[c] - positionsY[t]);
-                        var radSumSqr = (radii[c] + radii[t]) * (radii[c] + radii[t]);*/
-                        collisions[c * charCount + t] = CheckCircleIntersect(
-                            positionsX[c], 
-                            positionsY[c],
-                            radii[c],
-                            positionsX[t], 
-                            positionsY[t],
-                            radii[t]
-                            );
-                        t++;
-                    }
+                    collisions[c * charCount + t + 0] = vgetq_lane_u32(comparison, 0) > 0;
+                    collisions[c * charCount + t + 1] = vgetq_lane_u32(comparison, 1) > 0;
+                    collisions[c * charCount + t + 2] = vgetq_lane_u32(comparison, 2) > 0;
+                    collisions[c * charCount + t + 3] = vgetq_lane_u32(comparison, 3) > 0;
+                }
+
+                while (t < charCount)
+                {
+                    /*var squareDistance =
+                        (positionsX[c] - positionsX[t]) * (positionsX[c] - positionsX[t]) +
+                        (positionsY[c] - positionsY[t]) * (positionsY[c] - positionsY[t]);
+                    var radSumSqr = (radii[c] + radii[t]) * (radii[c] + radii[t]);*/
+                    collisions[c * charCount + t] = CheckCircleIntersect(
+                        positionsX[c],
+                        positionsY[c],
+                        radii[c],
+                        positionsX[t],
+                        positionsY[t],
+                        radii[t]
+                    );
+                    t++;
                 }
             }
         }
